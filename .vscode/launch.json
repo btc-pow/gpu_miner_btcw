@@ -1,0 +1,36 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "(gdb) Launch",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "/home/ubuntu/dev/gpu_miner_btcw/build/gpu_miner",
+            "args": ["20"], 
+      
+            "stopAtEntry": false,
+            "cwd": "${fileDirname}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable CUDA debugging",
+                    "text": "-exec-source-lookup",
+                    "ignoreFailures": true
+                }
+            ],
+            "miDebuggerPath": "/usr/local/cuda-12.6/bin/cuda-gdb",            
+            "miDebuggerArgs": "",
+            "logging": {
+                "moduleLoad": false
+            },
+            "console": "integratedTerminal"                        
+
+        }
+
+    ]
+}
