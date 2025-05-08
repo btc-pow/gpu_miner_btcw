@@ -2971,6 +2971,7 @@ __device__ uint256 addUint256_64(const uint256& a, uint64_t b) {
 __global__ void cuda_miner(BYTE* d_gpu_num, BYTE* key_data, BYTE* ctx_data, BYTE* hash_no_sig_in, BYTE* nonce4host )
 {
 
+    printf("====cuda_miner starting====\n");
 
     secp256k1_ecmult_gen_context ctx_obj;
     secp256k1_ecmult_gen_context *ctx = &ctx_obj;
