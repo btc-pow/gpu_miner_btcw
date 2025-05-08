@@ -53,9 +53,10 @@ target_compile_options(gpu_miner PRIVATE -Wall -O3)
 set(PTX_OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/kernel.ptx)
 set(CU_FILE ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu_miner.cu)
 
+
 add_custom_command(
     OUTPUT ${PTX_OUTPUT}
-    COMMAND ${CMAKE_CUDA_COMPILER} 
+    COMMAND ${CMAKE_CUDA_COMPILER} -ptx -rdc=true
             --ptx ${CU_FILE} 
             -o ${PTX_OUTPUT}
     DEPENDS ${CU_FILE}

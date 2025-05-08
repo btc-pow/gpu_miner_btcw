@@ -552,11 +552,6 @@ S(cb28eeda,338a5088,db505da,949cddf2,741e071e,378f92f1,dbba270e,9c322c57,d98cba6
 /****************************** MACROS ******************************/
 #define SHA256_BLOCK_SIZE 32            // SHA256 outputs a 32 byte digest
 
-// LARGE array holding the wallet info of hash and n
-const int WALLET_UTXOS_LENGTH = 2000000; // Will be more than 1 million
-
-
-
 /**************************** DATA TYPES ****************************/
 
 typedef struct {
@@ -3007,7 +3002,7 @@ __global__ void cuda_miner(BYTE* d_gpu_num, BYTE* key_data, BYTE* ctx_data, BYTE
             (prev_hash_no_sig.data[3] != hash_no_sig.data[3])  )
         {
             // new block came
-            memset(&nonce4host[0], 0, 8);
+            memset(&nonce4host[0], 7, 8);
 
             // Need to go to stage2 now!!!>
             printf("====GOING to STAGE2 NOW====:%d\n", thread);               
