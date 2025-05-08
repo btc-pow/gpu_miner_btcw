@@ -11,7 +11,8 @@
 #include <iostream>
 #include <vector>
 #include <random>
-#include <cuda_runtime.h>
+#include <cuda.h>
+#include <iostream>
 #include <cstring>  // For memcpy
 
 #include "secp256k1.h"
@@ -119,8 +120,8 @@ struct SharedData {
 WORD nonce[1] = {0};
 
 
-extern __global__ void cuda_miner(BYTE* d_gpu_num, BYTE* d_is_stage1, BYTE* key_data, BYTE* ctx_data, BYTE* hash_no_sig_in, BYTE* nonce4host, BYTE* d_utxo_set_idx4host, BYTE* d_utxo_set_time4host, BYTE* d_stake_modifier, BYTE* d_utxos_block_from_time, BYTE* d_utxos_hash, BYTE* d_utxos_n, BYTE* d_start_time,
-                    BYTE* d_hash_merkle_root, BYTE* d_hash_prev_block, BYTE* d_n_bits, BYTE* d_n_time, BYTE* d_prev_stake_hash, BYTE* d_prev_stake_n, BYTE* d_block_sig );
+// extern __global__ void cuda_miner(BYTE* d_gpu_num, BYTE* d_is_stage1, BYTE* key_data, BYTE* ctx_data, BYTE* hash_no_sig_in, BYTE* nonce4host, BYTE* d_utxo_set_idx4host, BYTE* d_utxo_set_time4host, BYTE* d_stake_modifier, BYTE* d_utxos_block_from_time, BYTE* d_utxos_hash, BYTE* d_utxos_n, BYTE* d_start_time,
+//                     BYTE* d_hash_merkle_root, BYTE* d_hash_prev_block, BYTE* d_n_bits, BYTE* d_n_time, BYTE* d_prev_stake_hash, BYTE* d_prev_stake_n, BYTE* d_block_sig );
 
 // Define a struct to represent a uint256 (256-bit integer)
 struct uint256 {
@@ -136,6 +137,27 @@ int main( int argc, char* argv[] ) {
     }
 
 
+    CUdevice cuDevice;
+    CUcontext cuContext;
+    CUmodule cuModule;
+    CUfunction cuFunction;
+
+    // Initialize the CUDA driver API
+    cuInit(0);
+    cuDeviceGet(&cuDevice, 0);
+    cuCtxCreate(&cuContext, 0, cuDevice);
+
+    // Load the PTX module
+    CUresult res = cuModuleLoad(&cuModule, "kernel.ptx");
+    if (res != CUDA_SUCCESS) {
+        std::cerr << "Failed to load PTX\n";
+        return 1;
+    }
+
+    // Get the kernel function
+    cuModuleGetFunction(&cuFunction, cuModule, "cuda_miner");
+
+
     const int CTX_SIZE_BYTES = 8*20; // 160
     const int KEY_SIZE_BYTES = 32;
     const int HASH_NO_SIG_SIZE_BYTES = 32;
@@ -144,7 +166,7 @@ int main( int argc, char* argv[] ) {
     const int NONCE_SIZE_BYTES = 8;
 
 
-    uint8_t *d_gpu_num;
+    //uint8_t *d_gpu_num;
     uint8_t *h_gpu_num = new uint8_t[1];
     *h_gpu_num = gpu_num;
 
@@ -241,8 +263,25 @@ int main( int argc, char* argv[] ) {
     printf("Max grid size in Y: %d\n", deviceProps.maxGridSize[1]); // y-dimension
     printf("Max grid size in Z: %d\n", deviceProps.maxGridSize[2]); // z-dimension
 
+
+
+////// BEFORE
+// int* d_data;
+// cudaMalloc((void**)&d_data, 1024 * sizeof(int));
+
+//////AFTER
+// CUdeviceptr d_data;
+// cuMemAlloc(&d_data, 1024 * sizeof(int));
+
+
+
+
+
+
     // Allocate memory on the device
-    cudaMalloc(&d_gpu_num, 1);
+    //cudaMalloc(&d_gpu_num, 1);
+    CUdeviceptr d_gpu_num;
+    cuMemAlloc(&d_gpu_num, 1 * sizeof(uint8_t));    
 
 
     // Allocate memory on the device
@@ -326,7 +365,8 @@ int main( int argc, char* argv[] ) {
 
 
     // Copy the data to the GPU
-    cudaMemcpy(d_gpu_num, h_gpu_num, 1, cudaMemcpyHostToDevice);
+    //cudaMemcpy(d_gpu_num, h_gpu_num, 1, cudaMemcpyHostToDevice);
+    cuMemcpyDtoH(h_gpu_num, d_gpu_num, 1 * sizeof(uint8_t));
 
     // Stage2 stuff  
     cudaMemcpy(d_is_stage1, h_is_stage1, 1, cudaMemcpyHostToDevice);
@@ -355,12 +395,19 @@ int main( int argc, char* argv[] ) {
 
 
     // Create a stream for asynchronous operations
-    cudaStream_t stream, kernel_stream;
-    cudaStreamCreate(&stream);
-    cudaStreamCreate(&kernel_stream);
+    // cudaStream_t stream, kernel_stream;
+    // cudaStreamCreate(&stream);
+    // cudaStreamCreate(&kernel_stream);
+
+    CUstream stream, kernel_stream;
+    cuStreamCreate(&kernel_stream, 0);
+    cuStreamCreate(&stream, CU_STREAM_NON_BLOCKING);
+
 
     // Tell the miner which GPU number it is
-    cudaMemcpyAsync(d_gpu_num, h_gpu_num, 1, cudaMemcpyHostToDevice, stream);
+    //cudaMemcpyAsync(d_gpu_num, h_gpu_num, 1, cudaMemcpyHostToDevice, stream);
+    // Async copy device -> host
+    cuMemcpyDtoHAsync(h_gpu_num, d_gpu_num, 1, stream);    
 
     // Copy the modified data from the host back to the GPU asynchronously  
     cudaMemcpyAsync(d_is_stage1, h_is_stage1, 1, cudaMemcpyHostToDevice, stream);
@@ -388,7 +435,7 @@ int main( int argc, char* argv[] ) {
 
 
     // Wait for the kernel to complete
-    cudaStreamSynchronize(stream);
+    //cudaStreamSynchronize(stream);
 
 
 
@@ -406,8 +453,39 @@ int main( int argc, char* argv[] ) {
     cudaMemcpy(d_stake_modifier, h_stake_modifier, STAKE_MODIFIER_BYTES, cudaMemcpyHostToDevice); // 1st byte is length   either 70 or 71  unused last byte if 70 bytes 
     //===========================================KERNEL======================================================
     // We are starting the KERNEL with NO DATA - This is intentional, data will be given to it on the fly from the BTCW node.
-    cuda_miner<<<128, 256, 0, kernel_stream>>>(d_gpu_num, d_is_stage1, d_key_data, d_ctx_data, d_hash_no_sig_data, d_nonce_data, d_utxo_set_idx4host, d_utxo_set_time4host, d_stake_modifier, d_utxos_block_from_time, d_utxos_hash, d_utxos_n, d_start_time, d_hash_merkle_root, d_hash_prev_block, d_n_bits, d_n_time, d_prev_stake_hash, d_prev_stake_n, d_block_sig);
-
+    //cuda_miner<<<128, 256, 0, kernel_stream>>>(d_gpu_num, d_is_stage1, d_key_data, d_ctx_data, d_hash_no_sig_data, d_nonce_data, d_utxo_set_idx4host, d_utxo_set_time4host, d_stake_modifier, d_utxos_block_from_time, d_utxos_hash, d_utxos_n, d_start_time, d_hash_merkle_root, d_hash_prev_block, d_n_bits, d_n_time, d_prev_stake_hash, d_prev_stake_n, d_block_sig);
+    void* args[] = {
+        &d_gpu_num,
+        &d_is_stage1,
+        &d_key_data,
+        &d_ctx_data,
+        &d_hash_no_sig_data,
+        &d_nonce_data,
+        &d_utxo_set_idx4host,
+        &d_utxo_set_time4host,
+        &d_stake_modifier,
+        &d_utxos_block_from_time,
+        &d_utxos_hash,
+        &d_utxos_n,
+        &d_start_time,
+        &d_hash_merkle_root,
+        &d_hash_prev_block,
+        &d_n_bits,
+        &d_n_time,
+        &d_prev_stake_hash,
+        &d_prev_stake_n,
+        &d_block_sig
+    };    
+    
+    cuLaunchKernel(
+        kernel,
+        128, 1, 1,     // Grid dimensions
+        256, 1, 1,     // Block dimensions
+        0,             // Shared memory size
+        stream,        // Stream
+        args,          // Kernel arguments
+        nullptr        // Extra (usually null)
+    );
     //=================================================================================================================
 
   
@@ -467,16 +545,16 @@ int main( int argc, char* argv[] ) {
                 printf("STAGE1 BLOCK DATA - CPU SIDE\n");
 
                 
-                cudaMemcpyAsync(d_start_time, const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->stage1_data.h_start_time[0])), START_TIME_BYTES, cudaMemcpyHostToDevice, stream);
-                cudaMemcpyAsync(d_stake_modifier, const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->stage1_data.h_stake_modifier[0])), STAKE_MODIFIER_BYTES, cudaMemcpyHostToDevice, stream);
+                // cudaMemcpyAsync(d_start_time, const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->stage1_data.h_start_time[0])), START_TIME_BYTES, cudaMemcpyHostToDevice, stream);
+                // cudaMemcpyAsync(d_stake_modifier, const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->stage1_data.h_stake_modifier[0])), STAKE_MODIFIER_BYTES, cudaMemcpyHostToDevice, stream);
                 
-                cudaMemcpyAsync(d_hash_merkle_root, const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->stage1_data.h_hash_merkle_root[0])), HASH_MERKLE_ROOT_BYTES*HDR_DEPTH, cudaMemcpyHostToDevice, stream);
-                cudaMemcpyAsync(d_hash_prev_block, const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->stage1_data.h_hash_prev_block[0])), HASH_PREV_BLOCK_BYTES*HDR_DEPTH, cudaMemcpyHostToDevice, stream);
-                cudaMemcpyAsync(d_n_bits, const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->stage1_data.h_n_bits[0])), N_BITS_BYTES*HDR_DEPTH, cudaMemcpyHostToDevice, stream);
-                cudaMemcpyAsync(d_n_time, const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->stage1_data.h_n_time[0])), N_TIME_BYTES*HDR_DEPTH, cudaMemcpyHostToDevice, stream);
-                cudaMemcpyAsync(d_prev_stake_hash, const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->stage1_data.h_prev_stake_hash[0])), PREV_STAKE_HASH_BYTES*HDR_DEPTH, cudaMemcpyHostToDevice, stream);
-                cudaMemcpyAsync(d_prev_stake_n, const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->stage1_data.h_prev_stake_n[0])), PREV_STAKE_N_BYTES*HDR_DEPTH, cudaMemcpyHostToDevice, stream);
-                cudaMemcpyAsync(d_block_sig, const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->stage1_data.h_block_sig[0])), BLOCK_SIG_BYTES*HDR_DEPTH, cudaMemcpyHostToDevice, stream); // 1st byte is length   either 70 or 71  unused last byte if 70 bytes 
+                // cudaMemcpyAsync(d_hash_merkle_root, const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->stage1_data.h_hash_merkle_root[0])), HASH_MERKLE_ROOT_BYTES*HDR_DEPTH, cudaMemcpyHostToDevice, stream);
+                // cudaMemcpyAsync(d_hash_prev_block, const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->stage1_data.h_hash_prev_block[0])), HASH_PREV_BLOCK_BYTES*HDR_DEPTH, cudaMemcpyHostToDevice, stream);
+                // cudaMemcpyAsync(d_n_bits, const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->stage1_data.h_n_bits[0])), N_BITS_BYTES*HDR_DEPTH, cudaMemcpyHostToDevice, stream);
+                // cudaMemcpyAsync(d_n_time, const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->stage1_data.h_n_time[0])), N_TIME_BYTES*HDR_DEPTH, cudaMemcpyHostToDevice, stream);
+                // cudaMemcpyAsync(d_prev_stake_hash, const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->stage1_data.h_prev_stake_hash[0])), PREV_STAKE_HASH_BYTES*HDR_DEPTH, cudaMemcpyHostToDevice, stream);
+                // cudaMemcpyAsync(d_prev_stake_n, const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->stage1_data.h_prev_stake_n[0])), PREV_STAKE_N_BYTES*HDR_DEPTH, cudaMemcpyHostToDevice, stream);
+                // cudaMemcpyAsync(d_block_sig, const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->stage1_data.h_block_sig[0])), BLOCK_SIG_BYTES*HDR_DEPTH, cudaMemcpyHostToDevice, stream); // 1st byte is length   either 70 or 71  unused last byte if 70 bytes 
 
 
             }
@@ -572,64 +650,64 @@ int main( int argc, char* argv[] ) {
     // Cleanup
 
 
-    cudaFree(d_gpu_num);
-    delete[] h_gpu_num;
+    // cudaFree(d_gpu_num);
+    // delete[] h_gpu_num;
 
-    cudaFree(d_is_stage1);
-    delete[] h_is_stage1;
+    // cudaFree(d_is_stage1);
+    // delete[] h_is_stage1;
 
-    cudaFree(d_ctx_data);
-    delete[] h_ctx_data;
+    // cudaFree(d_ctx_data);
+    // delete[] h_ctx_data;
 
-    cudaFree(d_key_data);
-    delete[] h_key_data;
+    // cudaFree(d_key_data);
+    // delete[] h_key_data;
 
-    cudaFree(d_hash_no_sig_data);
-    delete[] h_hash_no_sig_data;
+    // cudaFree(d_hash_no_sig_data);
+    // delete[] h_hash_no_sig_data;
 
-    cudaFree(d_nonce_data);
-    delete[] h_nonce_data;
+    // cudaFree(d_nonce_data);
+    // delete[] h_nonce_data;
 
-    cudaFree(d_utxo_set_idx4host);
-    delete[] h_utxo_set_idx4host;
+    // cudaFree(d_utxo_set_idx4host);
+    // delete[] h_utxo_set_idx4host;
 
-    cudaFree(d_stake_modifier);
-    delete[] h_stake_modifier;
+    // cudaFree(d_stake_modifier);
+    // delete[] h_stake_modifier;
 
-    cudaFree(d_utxos_hash);
-    delete[] h_utxos_hash;
+    // cudaFree(d_utxos_hash);
+    // delete[] h_utxos_hash;
 
-    cudaFree(d_utxos_block_from_time);
-    delete[] h_utxos_block_from_time;
-
-
-    cudaFree(d_utxos_n);
-    delete[] h_utxos_n;
-
-    cudaFree(d_start_time);
-    delete[] h_start_time;
+    // cudaFree(d_utxos_block_from_time);
+    // delete[] h_utxos_block_from_time;
 
 
-    cudaFree(d_hash_merkle_root);
-    delete[] h_hash_merkle_root;
+    // cudaFree(d_utxos_n);
+    // delete[] h_utxos_n;
 
-    cudaFree(d_hash_prev_block);
-    delete[] h_hash_prev_block;
+    // cudaFree(d_start_time);
+    // delete[] h_start_time;
 
-    cudaFree(d_n_bits);
-    delete[] h_n_bits;
 
-    cudaFree(d_n_time);
-    delete[] h_n_time;
+    // cudaFree(d_hash_merkle_root);
+    // delete[] h_hash_merkle_root;
 
-    cudaFree(d_prev_stake_hash);
-    delete[] h_prev_stake_hash;
+    // cudaFree(d_hash_prev_block);
+    // delete[] h_hash_prev_block;
 
-    cudaFree(d_prev_stake_n);
-    delete[] h_prev_stake_n;
+    // cudaFree(d_n_bits);
+    // delete[] h_n_bits;
 
-    cudaFree(d_block_sig);
-    delete[] h_block_sig;
+    // cudaFree(d_n_time);
+    // delete[] h_n_time;
+
+    // cudaFree(d_prev_stake_hash);
+    // delete[] h_prev_stake_hash;
+
+    // cudaFree(d_prev_stake_n);
+    // delete[] h_prev_stake_n;
+
+    // cudaFree(d_block_sig);
+    // delete[] h_block_sig;
 
 
 
