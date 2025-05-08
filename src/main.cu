@@ -1,7 +1,3 @@
-
-
-
-
 #include <iostream>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -17,11 +13,6 @@
 #include "secp256k1.h"
 
 #define SHM_NAME "/shared_mem"
-#define SEM_EMPTY "/sem_empty"
-#define SEM_FULL "/sem_full"
-
-//const int NUM_HASHES_BATCH = (1<<24); // This is really the total number of threads we want on the GPU (16M   )
-const int NUM_HASHES_BATCH = (1); // This is really the total number of threads we want on the GPU (16M   )
 
 
 const int CTX_SIZE_BYTES = 8*20; // 160
@@ -52,9 +43,6 @@ struct SharedData {
     volatile uint8_t data[TOTAL_BYTES_SEND];      // Buffer to send data
 };
 
-
-
-WORD nonce[1] = {0};
 
 
 //extern __global__ void cuda_miner(BYTE* d_gpu_num, BYTE* key_data, BYTE* ctx_data, BYTE* hash_no_sig_in, BYTE* nonce4host );
@@ -91,7 +79,10 @@ int main( int argc, char* argv[] ) {
     }
 
     // Get the kernel function
-    cuModuleGetFunction(&cuFunction, cuModule, "cuda_miner");
+    // Use the mangled name
+    // cat kernel.ptx  | grep cuda_miner
+	// .globl	_Z10cuda_minerPhS_S_S_S_
+    cuModuleGetFunction(&cuFunction, cuModule, "_Z10cuda_minerPhS_S_S_S_");
 
 
     const int CTX_SIZE_BYTES = 8*20; // 160
@@ -206,7 +197,7 @@ int main( int argc, char* argv[] ) {
         &d_nonce_data
     };    
     
-    cuLaunchKernel(
+    res = cuLaunchKernel(
         cuFunction,
         128, 1, 1,     // Grid dimensions
         256, 1, 1,     // Block dimensions
@@ -215,9 +206,14 @@ int main( int argc, char* argv[] ) {
         args,          // Kernel arguments
         nullptr        // Extra (usually null)
     );
+
+    if (res != CUDA_SUCCESS) {
+        const char* errStr = nullptr;
+        cuGetErrorString(res, &errStr);
+        std::cerr << "cuLaunchKernel failed: " << (errStr ? errStr : "Unknown error") << std::endl;
+    }
     //=================================================================================================================
 
-  
 
     // Open shared memory
     int shm_fd = shm_open(SHM_NAME, O_RDWR, 0666);
