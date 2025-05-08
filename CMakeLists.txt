@@ -37,8 +37,8 @@ include_directories(${PROJECT_SOURCE_DIR}/include)
 
 # Define the CUDA source files
 set(SRC_FILES
-    src/table.cu
     src/gpu_miner.cu
+    src/main.cu
 )
 
 
@@ -47,3 +47,19 @@ add_executable(gpu_miner ${SRC_FILES})
 # Optional: Add any additional compile options
 target_compile_options(gpu_miner PRIVATE -Wall -O3)
 
+
+
+# PTX generation setup
+set(PTX_OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/kernel.ptx)
+set(CU_FILE ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu_miner.cu)
+
+add_custom_command(
+    OUTPUT ${PTX_OUTPUT}
+    COMMAND ${CMAKE_CUDA_COMPILER} 
+            --ptx ${CU_FILE} 
+            -o ${PTX_OUTPUT}
+    DEPENDS ${CU_FILE}
+    COMMENT "Generating PTX file from ${CU_FILE}"
+)
+
+add_custom_target(generate_ptx ALL DEPENDS ${PTX_OUTPUT})
