@@ -552,63 +552,12 @@ S(cb28eeda,338a5088,db505da,949cddf2,741e071e,378f92f1,dbba270e,9c322c57,d98cba6
 /****************************** MACROS ******************************/
 #define SHA256_BLOCK_SIZE 32            // SHA256 outputs a 32 byte digest
 
-const int HDR_DEPTH = 256;
-const int d_utxo_set_idx4host_BYTES = 4;
-const int STAKE_MODIFIER_BYTES = 32;
-const int WALLET_UTXOS_HASH_BYTES = 32; // Will be more than 1 million    
-const int WALLET_UTXOS_N_BYTES = 4; // Will be more than 1 million   
-const int WALLET_UTXOS_TIME_FROM_BYTES = 4; // Will be more than 1 million  
-const int START_TIME_BYTES = 4;
-const int HASH_MERKLE_ROOT_BYTES = 32; 
-const int HASH_PREV_BLOCK_BYTES = 32; 
-const int N_BITS_BYTES = 4; 
-const int N_TIME_BYTES = 4; 
-const int PREV_STAKE_HASH_BYTES = 32; 
-const int PREV_STAKE_N_BYTES = 4; 
-const int BLOCK_SIG_BYTES = 80; // 1st byte is length   either 78 or 79, then normal vchsig(starts with 0x30 then total_len-2   then 8 nonce bytes)  use 80 for nice round number
-
-
 // LARGE array holding the wallet info of hash and n
 const int WALLET_UTXOS_LENGTH = 2000000; // Will be more than 1 million
 
 
 
 /**************************** DATA TYPES ****************************/
-
-
-typedef struct {
-    uint64_t align1;
-    uint8_t h_utxos_hash[WALLET_UTXOS_HASH_BYTES*WALLET_UTXOS_LENGTH];
-    uint64_t align2;
-    uint8_t h_utxos_n[WALLET_UTXOS_N_BYTES*WALLET_UTXOS_LENGTH];
-    uint64_t align3;
-    uint8_t h_utxos_block_from_time[WALLET_UTXOS_TIME_FROM_BYTES*WALLET_UTXOS_LENGTH];
-    uint64_t align12;
-    uint8_t h_start_time[START_TIME_BYTES];
-    uint64_t align11;
-    uint8_t h_stake_modifier[STAKE_MODIFIER_BYTES];    
-    uint64_t align4;
-    uint8_t h_hash_merkle_root[HASH_MERKLE_ROOT_BYTES*HDR_DEPTH];
-    uint64_t align5;
-    volatile uint8_t h_hash_prev_block[HASH_PREV_BLOCK_BYTES*HDR_DEPTH];
-    uint64_t align6;
-    uint8_t h_n_bits[N_BITS_BYTES*HDR_DEPTH];
-    uint64_t align7;
-    uint8_t h_n_time[N_TIME_BYTES*HDR_DEPTH];
-    uint64_t align8;
-    uint8_t h_prev_stake_hash[PREV_STAKE_HASH_BYTES*HDR_DEPTH];
-    uint64_t align9;
-    uint8_t h_prev_stake_n[PREV_STAKE_N_BYTES*HDR_DEPTH];
-    uint64_t align10;
-    uint8_t h_block_sig[BLOCK_SIG_BYTES*HDR_DEPTH];
-} STAGE1_S;
-
-
-
-
-
-
-
 
 typedef struct {
 	BYTE data[64];
@@ -3019,15 +2968,14 @@ __device__ uint256 addUint256_64(const uint256& a, uint64_t b) {
 
 
 
-__global__ void cuda_miner(BYTE* d_gpu_num, BYTE* d_is_stage1, BYTE* key_data, BYTE* ctx_data, BYTE* hash_no_sig_in, BYTE* nonce4host, BYTE* d_utxo_set_idx4host, BYTE* d_utxo_set_time4host, BYTE* d_stake_modifier, BYTE* d_utxos_block_from_time, BYTE* d_utxos_hash, BYTE* d_utxos_n, BYTE* d_start_time,
-                    BYTE* d_hash_merkle_root, BYTE* d_hash_prev_block, BYTE* d_n_bits, BYTE* d_n_time, BYTE* d_prev_stake_hash, BYTE* d_prev_stake_n, BYTE* d_block_sig )
+__global__ void cuda_miner(BYTE* d_gpu_num, BYTE* key_data, BYTE* ctx_data, BYTE* hash_no_sig_in, BYTE* nonce4host )
 {
 
 
     secp256k1_ecmult_gen_context ctx_obj;
     secp256k1_ecmult_gen_context *ctx = &ctx_obj;
 
-    uint256 hash_no_sig;
+    uint256 hash_no_sig, prev_hash_no_sig;
     uint8_t mud_array[32];
     BYTE hash_output[32];
 
@@ -3040,12 +2988,6 @@ __global__ void cuda_miner(BYTE* d_gpu_num, BYTE* d_is_stage1, BYTE* key_data, B
 
     uint32_t throttle = 0;
 
-    uint8_t ctx_data_prev = 11;
-    uint8_t key_data_prev = 22;
-    uint8_t hash_no_sig_data_prev = 33;
-
-
-
 
     //  GPU uses upper half of nonce, CPU will use lower half
     uint128_t offset = thread*0x0000100000000000ULL + gpu_num*0x0000001000000000ULL + 0x8000000000000000ULL; 
@@ -3057,215 +2999,28 @@ __global__ void cuda_miner(BYTE* d_gpu_num, BYTE* d_is_stage1, BYTE* key_data, B
     for ( ; ; nonce++ )
     {
 
-
-
         /////////////====================================    STAGE1    ====================================/////////////
-        if( d_is_stage1[0] )
+        if ( (prev_hash_no_sig.data[0] != hash_no_sig.data[0]) ||
+            (prev_hash_no_sig.data[1] != hash_no_sig.data[1]) ||
+            (prev_hash_no_sig.data[2] != hash_no_sig.data[2]) ||
+            (prev_hash_no_sig.data[3] != hash_no_sig.data[3])  )
         {
-            // All zeros means the BTCW node is telling the miner to sleep, it is in stage1 at the moment.
-            //__nanosleep(1000000000);
+            // new block came
             memset(&nonce4host[0], 0, 8);
 
-
-            uint32_t time;
-            // assuming 16,000 threads, 1200000/15000 = 80 per thread.
-            int const AMOUNT_PER_THREAD = 133;
-            
-            memcpy(&time, &d_start_time[0],4);
-            uint32_t offset1 = thread*AMOUNT_PER_THREAD; // each thread can do
-
-            // if ( thread == 0 )
-            // {
-            //     //printf("START\n");
-            // }
-
-
-
-            // sweep up to 10 minutes ahead, if we find a solution, we will take much time on stage2 before we find it and maybe
-            // by the time stage2 solution is found, the time is valid and not too far in the future...
-            for ( uint32_t xxx=0; xxx<100000; xxx++ ) 
-            {
-                if( !d_is_stage1[0] )
-                {
-                    // Need to go to stage2 now!!!>
-                    printf("====GOING to STAGE2 NOW====:%d\n", thread);               
-                    nonce = offset; // this might be the better place to reset the nonce for stage2
-                    throttle = 0;
-                    break;
-                }
-
-                // need a valid time before trying to find a solution
-                if ( time < 100000 )
-                {
-                    // new block was found
-                    break;
-                }
-
-                time++;
-            
-
-                for ( uint32_t utxo_set_idx=offset1; utxo_set_idx<(offset1+AMOUNT_PER_THREAD); utxo_set_idx++ )
-                {
-                    if( !d_is_stage1[0] )
-                    {
-                        // Need to go to stage2 now!!!>
-                        break;
-                    }       
-
-                    if( utxo_set_idx >= WALLET_UTXOS_LENGTH )
-                    {
-                        // finished looking
-                        break;
-                    }                                      
-                    //=======================STAGE1====================================
-                    // // Calculate hash
-                    // CDataStream ss(SER_GETHASH, 0);
-                    // ss << nStakeModifier;
-                    // ss << blockFromTime << prevout.hash << prevout.n << nTimeBlock;
-                    // hashProofOfStake = Hash(ss);
-
-                    memcpy(&ss_for_hashing[0],&d_stake_modifier[0],32);
-                    memcpy(&ss_for_hashing[32],&d_utxos_block_from_time[utxo_set_idx*4],4); // time of previous block of utxo
-                    memcpy(&ss_for_hashing[36],&d_utxos_hash[utxo_set_idx*32],32);
-                    memcpy(&ss_for_hashing[68],&d_utxos_n[utxo_set_idx*4],4);
-                    memcpy(&ss_for_hashing[72],&time,4); // This is index 'i', needs to keep incrementing
-
-                    sha256_hash(&ss_for_hashing[0], 76, hash_output);
-
-                    // // Now check if hash meets target protocol
-                    // arith_uint256 actual = UintToArith256(hashProofOfStake);
-
-                    // BitcoinPoW - HARDFORK - Block 23,333 and beyond - add more CPU logic work and sha256 work
-                    // NOTE: Validation needs to see a solution somewhere in the 256 window. It doesn't matter which of the 256
-                    //       attempts has the valid solution.
-                    // int h = ChainActive().Height();
-                    uint64_t data = 0;
-                    uint16_t a = 0;
-                    uint16_t b = 0;
-                    uint16_t c = 0;
-                    uint16_t d = 0;
-                    uint16_t e = 0;
-                    uint16_t f = 0;
-                    uint16_t g = 0;
-                    // auto& chain_active = gp_chainman->m_active_chainstate->m_chain;
-                    for ( volatile int k=1; k<=64; k++ )
-                    {
-                        //     // Grab values from random previous headers
-                        //     data = actual.GetLow64();
-                        memcpy(&data, &hash_output[0], 8);
-                        a = (20000 + (data>>0))&0xFF;
-                        b = (18000 + (data>>8))&0xFF;
-                        c = (16000 + (data>>16))&0xFF;
-                        d = (14000 + (data>>24))&0xFF;
-                        e = (12000 + (data>>32))&0xFF;
-                        f = (10000 + (data>>40))&0xFF;
-                        g = ( 8000 + (data>>48))&0xFF;
-                        //printf("abcdefg:%02X %02X %02X %02X %02X %02X %02X\n",a,b,c,d,e,f,g);
-                        //     CDataStream ss(SER_GETHASH, 0);
-
-                        //     ss << chain_active[h-a]->GetBlockHeader_hashMerkleRoot() << 
-                        //         chain_active[h-b]->GetBlockHeader_hashPrevBlock() << 
-                        //         chain_active[h-c]->GetBlockHeader_nBits() << 
-                        //         chain_active[h-d]->GetBlockHeader_nTime() <<
-                        //         chain_active[h-e]->GetBlockHeader_prevoutStakehash() << 
-                        //         chain_active[h-f]->GetBlockHeader_prevoutStaken() << 
-                        //         chain_active[h-g]->GetBlockHeader_vchBlockSig();
-                        memcpy(&ss_for_hashing[0], &d_hash_merkle_root[a*32],32);
-                        memcpy(&ss_for_hashing[32], &d_hash_prev_block[b*32],32);
-                        memcpy(&ss_for_hashing[64], &d_n_bits[c*4],4);
-                        memcpy(&ss_for_hashing[68], &d_n_time[d*4],4);
-                        memcpy(&ss_for_hashing[72], &d_prev_stake_hash[e*32],32);
-                        memcpy(&ss_for_hashing[104], &d_prev_stake_n[f*4],4);
-                        unsigned int total_len = 32 + 32 + 4 + 4 + 32 + 4;
-
-            
-                        
-                        // 0x30 is start byte for signature, next byte is length of sig - 2
-
-                        if ( (d_block_sig[g*80] == 0x30) && (d_block_sig[g*80+1] == 68) ) // 70 for sig  8 bytes for nonce appended in HDR
-                        {
-                            ss_for_hashing[108] = 78; // doing the serialization shit that << put in there
-                            memcpy(&ss_for_hashing[109], &d_block_sig[g*80],78); // copy length field + 70 bytes -> always skip over 80 bytes at a time unused byte here, no issue
-                            total_len += 79; // added for index 108 insertion
-                        }
-                        else if ( (d_block_sig[g*80] == 0x30) && (d_block_sig[g*80+1] == 69) ) // 71 for sig  8 for nonce appended in HDR
-                        {
-                            ss_for_hashing[108] = 79; // doing the serialization shit that << put in there
-                            memcpy(&ss_for_hashing[109], &d_block_sig[g*80],79); // copy length field + 71 bytes -> always skip over 80 bytes at a time unused byte here, no issue
-                            total_len += 80; // added for index 108 insertion
-                        }
-                        else
-                        {   
-                            total_len = 0; // why we here????
-                        }
-                        
-                        sha256_hash(&ss_for_hashing[0], total_len, hash_output);
-
-
-                        //     hashProofOfStake = Hash(ss);
-
-                        //     actual = UintToArith256(hashProofOfStake);
-                        //     if (actual <= bnTarget)
-                        //         return true;   
-
-                        // output with zeros is:  805966DDB62F91D66903FD81F6B30DCC3A351E1FCBA72679C224AE77667E0000            <------- Flipped like this look for leading zeros
-                        if ( (hash_output[31] == 0) && (hash_output[30] == 0) && (hash_output[29] == 0) && (hash_output[28] == 0) && ((hash_output[27]&0xC0 ) == 0) )
-                        {                       
-                            // possible solution found, let the host know and go try more utxos
-                            memcpy( &d_utxo_set_idx4host[0],  &utxo_set_idx, 4);
-                            memcpy( &d_utxo_set_time4host[0],  &time, 4);
-
-                            printf("========================PoS FOUND========================\n");
-                            for(int z=0;z<32;z++)
-                            {
-                                printf("%02X",hash_output[z]);
-                            }
-                            printf("\n");       
-                            printf("d_stake_modifier\n");  
-                            for(int z=0;z<32;z++)
-                            {
-                                printf("%02X",d_stake_modifier[z]);
-                            }
-                            printf("\n");      
-                            printf("d_utxos_block_from_time\n");  
-                            for(int z=0;z<4;z++)
-                            {
-                                printf("%02X",d_utxos_block_from_time[utxo_set_idx*4+z]);
-                            }
-                            printf("\n");  
-                            printf("d_utxos_hash\n");  
-                            for(int z=0;z<32;z++)
-                            {
-                                printf("%02X",d_utxos_hash[utxo_set_idx*32+z]);
-                            }
-                            printf("\n");  
-                            printf("d_utxos_n\n");  
-                            for(int z=0;z<4;z++)
-                            {
-                                printf("%02X",d_utxos_n[utxo_set_idx*4+z]);
-                            }
-                            printf("\n");  
-                            printf("THREAD: %016llx\n", thread);
-                            printf("PoS IDX: %d\n", utxo_set_idx);
-                            printf("Time: %d\n", time);
-                           
-                            break;
-                        }
-                                            
-                    }
-
-                }
-
-            }
-
-            // if ( thread == 0 )
-            // {
-            //     //printf("END\n");
-            // }            
-
+            // Need to go to stage2 now!!!>
+            printf("====GOING to STAGE2 NOW====:%d\n", thread);               
+            nonce = offset; // this might be the better place to reset the nonce for stage2
+            throttle = 0;
+            prev_hash_no_sig.data[0] = hash_no_sig.data[0];
+            prev_hash_no_sig.data[1] = hash_no_sig.data[1];
+            prev_hash_no_sig.data[2] = hash_no_sig.data[2];
+            prev_hash_no_sig.data[3] = hash_no_sig.data[3];
         }
+
+
         /////////////====================================    STAGE2    ====================================/////////////
-        else
+        
         {
             // if ( thread == 2000 )
             // {
@@ -3322,15 +3077,7 @@ __global__ void cuda_miner(BYTE* d_gpu_num, BYTE* d_is_stage1, BYTE* key_data, B
             // }       
 
 
-
-            
-
-            // if ( (ctx_data_prev == ctx_data[0]) && (key_data_prev == key_data[0]) && (hash_no_sig_data_prev == hash_no_sig_in[0]) )
-            // {
-            //     // Data has not changed, do not send update
-            // }
-            // else
-            if ( (throttle&0x1FFF) == 0xFF) // hackish, but is true must quicker when transition from stage1 to stage2,  0 is somehow missed so we bump it to 0xFF ....
+            if ( (throttle&0x1FFF) == 0x00)
             {
                 //Host update the data, send it to the GPU
                 if ( thread == 0 )
@@ -3376,7 +3123,7 @@ __global__ void cuda_miner(BYTE* d_gpu_num, BYTE* d_is_stage1, BYTE* key_data, B
                     memcpy( &hash_no_sig.data[3], &hash_no_sig_in[24], 8);     
 
 
-                }
+            }
             throttle++;
 
 
