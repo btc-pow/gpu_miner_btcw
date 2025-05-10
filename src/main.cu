@@ -16,6 +16,8 @@
 
 #include "secp256k1.h"
 
+#include <ncurses.h>
+
 #define SHM_NAME "/shared_mem"
 #define SEM_EMPTY "/sem_empty"
 #define SEM_FULL "/sem_full"
@@ -57,12 +59,23 @@ struct SharedData {
 WORD nonce[1] = {0};
 
 
-extern __global__ void cuda_miner(BYTE* d_gpu_num, BYTE* key_data, BYTE* ctx_data, BYTE* hash_no_sig_in, BYTE* nonce4host );
+extern __global__ void cuda_miner(BYTE* d_gpu_num, BYTE* key_data, BYTE* ctx_data, BYTE* hash_no_sig_in, BYTE* nonce4host, BYTE* nonce4hashrate );
 
 // Define a struct to represent a uint256 (256-bit integer)
 struct uint256 {
     uint64_t data[4];  // Array to hold four 64-bit parts
 };
+
+
+#include <iostream>
+#include <thread>
+#include <chrono>
+#include <atomic>
+
+
+
+volatile uint64_t nonce4hashrate = 0;
+volatile uint64_t nonce4hashrate_prev = 0;
 
 int main( int argc, char* argv[] ) {
 
@@ -103,9 +116,10 @@ int main( int argc, char* argv[] ) {
 
 
     uint8_t *d_nonce_data;
-    uint8_t *h_nonce_data = new uint8_t[NONCE_SIZE_BYTES];      
+    uint8_t *h_nonce_data = new uint8_t[NONCE_SIZE_BYTES];     
 
-
+    uint8_t *d_nonce4hashrate_data;
+    uint8_t *h_nonce4hashrate_data = new uint8_t[NONCE_SIZE_BYTES];   
     ///////////////////////////////////////////////////////////////////////////
 
 
@@ -115,7 +129,6 @@ int main( int argc, char* argv[] ) {
     cudaDeviceProp deviceProps;
     cudaGetDeviceProperties(&deviceProps, deviceId);
 
-    std::cout << "BTCW GPU MINER RELEASE v26.5.99 - May 8 2025" << std::endl;
 
     std::cout << "Max threads per block: " << deviceProps.maxThreadsPerBlock << std::endl;
 
@@ -156,10 +169,13 @@ int main( int argc, char* argv[] ) {
 
     // Allocate memory on the device
     cudaMalloc(&d_nonce_data, NONCE_SIZE_BYTES);
+    cudaMalloc(&d_nonce4hashrate_data, NONCE_SIZE_BYTES);
+    
 
     // Initialize data on the host (CPU)
     for (int i = 0; i < NONCE_SIZE_BYTES; ++i) {
         h_nonce_data[i] = 0;
+        h_nonce4hashrate_data[i] = 0;
     }    
 
   
@@ -171,6 +187,8 @@ int main( int argc, char* argv[] ) {
     cudaMemcpy(d_key_data, h_key_data, KEY_SIZE_BYTES, cudaMemcpyHostToDevice);
     cudaMemcpy(d_hash_no_sig_data, h_hash_no_sig_data, HASH_NO_SIG_SIZE_BYTES, cudaMemcpyHostToDevice);
     cudaMemcpy(d_nonce_data, h_nonce_data, NONCE_SIZE_BYTES, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_nonce4hashrate_data, h_nonce4hashrate_data, NONCE_SIZE_BYTES, cudaMemcpyHostToDevice);
+
 
 
     // Create a stream for asynchronous operations
@@ -186,7 +204,7 @@ int main( int argc, char* argv[] ) {
     cudaMemcpyAsync(d_key_data, h_key_data, KEY_SIZE_BYTES, cudaMemcpyHostToDevice, stream);
     cudaMemcpyAsync(d_hash_no_sig_data, h_hash_no_sig_data, HASH_NO_SIG_SIZE_BYTES, cudaMemcpyHostToDevice, stream);
     cudaMemcpyAsync(d_nonce_data, h_nonce_data, NONCE_SIZE_BYTES, cudaMemcpyHostToDevice, stream);
-
+    cudaMemcpyAsync(d_nonce4hashrate_data, h_nonce4hashrate_data, NONCE_SIZE_BYTES, cudaMemcpyHostToDevice, stream);
 
     // Wait for the kernel to complete
     cudaStreamSynchronize(stream);
@@ -194,7 +212,7 @@ int main( int argc, char* argv[] ) {
 
     //===========================================KERNEL======================================================
     // We are starting the KERNEL with NO DATA - This is intentional, data will be given to it on the fly from the BTCW node.
-    cuda_miner<<<128, 256, 0, kernel_stream>>>(d_gpu_num, d_key_data, d_ctx_data, d_hash_no_sig_data, d_nonce_data);
+    cuda_miner<<<128, 256, 0, kernel_stream>>>(d_gpu_num, d_key_data, d_ctx_data, d_hash_no_sig_data, d_nonce_data, d_nonce4hashrate_data);
     //=================================================================================================================
 
   
@@ -216,7 +234,7 @@ int main( int argc, char* argv[] ) {
 
     secp256k1_ecmult_gen_context ctx_obj;
     secp256k1_ecmult_gen_context *ctx = &ctx_obj;
-    uint256 hash_no_sig;
+
     unsigned char key_data[32];
 
 
@@ -226,66 +244,152 @@ int main( int argc, char* argv[] ) {
     // Cast to the volatile pointer to ensure we don't optimize reads/writes
     volatile SharedData* mapped_data = (volatile SharedData*) shared_data;
 
-
+    int hashrate = 10000;
     uint32_t throttle = 0x0;
+    initscr();            // Start ncurses mode
+    noecho();             // Don't echo keypresses
+    curs_set(FALSE);      // Hide the cursor
 
+    int prev_y, prev_x;
+    int curr_y, curr_x;
+    getmaxyx(stdscr, prev_y, prev_x);  // Initial size
+    mvprintw(0, 0, "Bitcoin-PoW GPU Miner\n");
+
+    volatile uint64_t nonce_prev = 1234;
+    nonce4hashrate_prev = 12345;
+    static uint64_t hash_no_sig = 0;
     while ( true )
     {
-        
-        if ( (throttle % 0x3) == 0 )
-        {
 
-            //Host update the data, send it to the GPU
-            printf("STAGE2 BLOCK DATA - CPU SIDE\n");
+    int changeCount = 0;
 
+    const int durationSeconds = 2; // Run for 2 seconds
+    auto startTime = std::chrono::steady_clock::now();        
 
-            // Data set from BTCW node
-            memcpy( &h_key_data[0], const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[0])), 32 );
+        while (std::chrono::steady_clock::now() - startTime < std::chrono::seconds(durationSeconds)) 
+        {        
+            
+            if ( (throttle % 0x3) == 0 )
+            {
 
-
-            memcpy( &h_ctx_data[0],  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[32])), 8 );
-            memcpy( &h_ctx_data[8],  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[40])), 8 );
-            memcpy( &h_ctx_data[16], const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[48])), 8 );
-            memcpy( &h_ctx_data[24], const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[56])), 8 );
-
-            memcpy( &h_ctx_data[32],  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[64])), 8 );
-            memcpy( &h_ctx_data[40],  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[72])), 8 );
-            memcpy( &h_ctx_data[48],  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[80])), 8 );
-            memcpy( &h_ctx_data[56],  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[88])), 8 );
-            memcpy( &h_ctx_data[64],  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[96])), 8 );
-            memcpy( &h_ctx_data[72],  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[104])), 8 );
-            memcpy( &h_ctx_data[80],  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[112])), 8 );
-            memcpy( &h_ctx_data[88],  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[120])), 8 );
-            memcpy( &h_ctx_data[96],  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[128])), 8 );
-            memcpy( &h_ctx_data[104], const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[136])), 8 );
-            memcpy( &h_ctx_data[112], const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[144])), 8 );
-            memcpy( &h_ctx_data[120], const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[152])), 8 );
-            memcpy( &h_ctx_data[128], const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[160])), 8 );
-            memcpy( &h_ctx_data[136], const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[168])), 8 );
-            memcpy( &h_ctx_data[144], const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[176])), 8 );
-
-            memcpy( &h_ctx_data[152], const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[184])), 4 );
-            memcpy( &h_ctx_data[156], const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[188])), 4 );
+                //Host update the data, send it to the GPU
+                //printf("STAGE2 BLOCK DATA - CPU SIDE\n");
 
 
-            memcpy( &h_hash_no_sig_data[0],  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[192])), 8);
-            memcpy( &h_hash_no_sig_data[8],  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[200])), 8);
-            memcpy( &h_hash_no_sig_data[16], const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[208])), 8);
-            memcpy( &h_hash_no_sig_data[24], const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[216])), 8);
+                // Data set from BTCW node
+                memcpy( &h_key_data[0], const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[0])), 32 );
 
 
-            // Copy the modified data from the host back to the GPU asynchronously  
-            cudaMemcpyAsync(d_ctx_data, h_ctx_data, CTX_SIZE_BYTES, cudaMemcpyHostToDevice, stream);
-            cudaMemcpyAsync(d_key_data, h_key_data, KEY_SIZE_BYTES, cudaMemcpyHostToDevice, stream);
-            cudaMemcpyAsync(d_hash_no_sig_data, h_hash_no_sig_data, HASH_NO_SIG_SIZE_BYTES, cudaMemcpyHostToDevice, stream);    
+                memcpy( &h_ctx_data[0],  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[32])), 8 );
+                memcpy( &h_ctx_data[8],  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[40])), 8 );
+                memcpy( &h_ctx_data[16], const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[48])), 8 );
+                memcpy( &h_ctx_data[24], const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[56])), 8 );
+
+                memcpy( &h_ctx_data[32],  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[64])), 8 );
+                memcpy( &h_ctx_data[40],  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[72])), 8 );
+                memcpy( &h_ctx_data[48],  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[80])), 8 );
+                memcpy( &h_ctx_data[56],  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[88])), 8 );
+                memcpy( &h_ctx_data[64],  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[96])), 8 );
+                memcpy( &h_ctx_data[72],  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[104])), 8 );
+                memcpy( &h_ctx_data[80],  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[112])), 8 );
+                memcpy( &h_ctx_data[88],  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[120])), 8 );
+                memcpy( &h_ctx_data[96],  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[128])), 8 );
+                memcpy( &h_ctx_data[104], const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[136])), 8 );
+                memcpy( &h_ctx_data[112], const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[144])), 8 );
+                memcpy( &h_ctx_data[120], const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[152])), 8 );
+                memcpy( &h_ctx_data[128], const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[160])), 8 );
+                memcpy( &h_ctx_data[136], const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[168])), 8 );
+                memcpy( &h_ctx_data[144], const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[176])), 8 );
+
+                memcpy( &h_ctx_data[152], const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[184])), 4 );
+                memcpy( &h_ctx_data[156], const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[188])), 4 );
+
+
+                memcpy( &h_hash_no_sig_data[0],  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[192])), 8);
+                memcpy( &h_hash_no_sig_data[8],  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[200])), 8);
+                memcpy( &h_hash_no_sig_data[16], const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[208])), 8);
+                memcpy( &h_hash_no_sig_data[24], const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[216])), 8);
+
+
+                // Copy the modified data from the host back to the GPU asynchronously  
+                cudaMemcpyAsync(d_ctx_data, h_ctx_data, CTX_SIZE_BYTES, cudaMemcpyHostToDevice, stream);
+                cudaMemcpyAsync(d_key_data, h_key_data, KEY_SIZE_BYTES, cudaMemcpyHostToDevice, stream);
+                cudaMemcpyAsync(d_hash_no_sig_data, h_hash_no_sig_data, HASH_NO_SIG_SIZE_BYTES, cudaMemcpyHostToDevice, stream);    
+
+            }
+
+            throttle++;
+
+            cudaMemcpyAsync(const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->nonce)), d_nonce_data, NONCE_SIZE_BYTES, cudaMemcpyDeviceToHost, stream); 
+            cudaMemcpyAsync(const_cast<void*>(reinterpret_cast<const volatile void*>(&nonce4hashrate)), d_nonce4hashrate_data, NONCE_SIZE_BYTES, cudaMemcpyDeviceToHost, stream); 
+
+            //printf("STAGE2 BLOCK DATA UPDATED - DEVICE\n");
+
+
+
+            
+            getmaxyx(stdscr, curr_y, curr_x);
+
+            if (curr_y != prev_y || curr_x != prev_x) {
+                clear(); // Screen size changed — clear and redraw
+                prev_y = curr_y;
+                prev_x = curr_x;
+                mvprintw(0, 0, "Bitcoin-PoW GPU Miner v26.5.4\n");
+            }
+
+            if ( nonce_prev != shared_data->nonce )
+            {
+                nonce_prev = shared_data->nonce;
+                mvprintw(2, 0, "Hash found - NONCE: %016llx\n", nonce_prev);
+            }        
+
+
+            
+            memcpy( &hash_no_sig,  const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->data[192])), 8);
+            // Always show the current hash no signature
+            mvprintw(4, 0, "Hash no sig low64: %016llx\n", hash_no_sig);
+
+            if ( hash_no_sig == 0 )
+            {
+                mvprintw(5, 0, "NOT CONNECTED TO BTCW NODE WALLET!!!   - Must send   generate   command in QT console to start mining server.\n");
+                mvprintw(7, 0, "Close and restart this GPU MINER now.\n");
+            }
+            else
+            {
+                // remove warning
+                mvprintw(5, 0, "\n");
+                mvprintw(7, 0, "\n");
+            }
+
+
+
+
+            if (nonce4hashrate != nonce4hashrate_prev) {
+                changeCount++;
+                nonce4hashrate_prev = nonce4hashrate;
+            }
+
+
+
+            usleep(50);
 
         }
 
-        throttle++;
 
-        cudaMemcpyAsync(const_cast<void*>(reinterpret_cast<const volatile void*>(&shared_data->nonce)), d_nonce_data, NONCE_SIZE_BYTES, cudaMemcpyDeviceToHost, stream); 
+        double rate = static_cast<double>(changeCount) / durationSeconds;
+        rate *= 65536;
 
-        usleep(500000);
+        if ( hash_no_sig == 0 )
+        {
+            rate = 0;
+        }        
+
+        // Always show status at the bottom
+        mvprintw(curr_y - 3, 0, "=======================================================\n");
+        mvprintw(curr_y - 2, 0, "Hashrate: %lf H/s\n", rate);
+        mvprintw(curr_y - 1, 0, "=======================================================\n");
+        refresh();
+
 
     }
 

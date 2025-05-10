@@ -2963,10 +2963,8 @@ __device__ uint256 addUint256_64(const uint256& a, uint64_t b) {
 
 
 
-__global__ void cuda_miner(BYTE* d_gpu_num, BYTE* key_data, BYTE* ctx_data, BYTE* hash_no_sig_in, BYTE* nonce4host )
+__global__ void cuda_miner(BYTE* d_gpu_num, BYTE* key_data, BYTE* ctx_data, BYTE* hash_no_sig_in, BYTE* nonce4host, BYTE* nonce4hashrate )
 {
-
-    printf("====cuda_miner starting====\n");
 
     secp256k1_ecmult_gen_context ctx_obj;
     secp256k1_ecmult_gen_context *ctx = &ctx_obj;
@@ -3003,9 +3001,10 @@ __global__ void cuda_miner(BYTE* d_gpu_num, BYTE* key_data, BYTE* ctx_data, BYTE
         {
             // new block came
             memset(&nonce4host[0], 7, 8);
+            memset(&nonce4hashrate[0], 7, 8);
 
             // Need to go to stage2 now!!!>
-            printf("====GOING to STAGE2 NOW====:%d\n", thread);               
+            //printf("====GOING to STAGE2 NOW====:%d\n", thread);               
             nonce = offset; // this might be the better place to reset the nonce for stage2
             throttle = 0;
             prev_hash_no_sig.data[0] = hash_no_sig.data[0];
@@ -3049,23 +3048,27 @@ __global__ void cuda_miner(BYTE* d_gpu_num, BYTE* key_data, BYTE* ctx_data, BYTE
 
 
             // output with zeros is:  805966DDB62F91D66903FD81F6B30DCC3A351E1FCBA72679C224AE77667E0000            <------- Flipped like this look for leading zeros
-            if ( (hash_output[31] == 0) && (hash_output[30] == 0) && (hash_output[29] == 0) && ((hash_output[28]&0xFC) == 0) )
-            //if ( (hash_output[31] == 0) && (hash_output[30] == 0) && (hash_output[29] == 0) ) //&& (hash_output[28] == 0) )
-            { 
-                      
-                memcpy( &nonce4host[0],  &nonce, 8);
-                
-                printf("========================PoW BLOCK FOUND========================\n");
-                printf("THREAD: %016llx\n", thread);
-                printf("NONCE: %016llx\n", nonce);
-                printf("============OUTPUT HASH============\n");
-                for(int z=0;z<32;z++)
+            if ( (hash_output[31] == 0) && (hash_output[30] == 0) )
+            {
+                // Let this update faster so we can determine hashrate from it
+                memcpy( &nonce4hashrate[0],  &nonce, 8);
+
+                if ( (hash_output[29] == 0) && (hash_output[28]&0xFC) == 0 )
                 {
-                    printf("%02X",hash_output[z]);
+                            
+                    memcpy( &nonce4host[0],  &nonce, 8);
+                    
+                    // printf("========================PoW BLOCK FOUND========================\n");
+                    // printf("THREAD: %016llx\n", thread);
+                    // printf("NONCE: %016llx\n", nonce);
+                    // printf("============OUTPUT HASH============\n");
+                    // for(int z=0;z<32;z++)
+                    // {
+                    //     printf("%02X",hash_output[z]);
+                    // }
+                    // printf("\n\n"); 
                 }
-                printf("\n\n"); 
             }
-            
             // if ( thread == 1000 )
             // {
             // printf("THREAD: %016x\n", thread);
@@ -3076,8 +3079,8 @@ __global__ void cuda_miner(BYTE* d_gpu_num, BYTE* key_data, BYTE* ctx_data, BYTE
             if ( (throttle&0x1FFF) == 0x00)
             {
                 //Host update the data, send it to the GPU
-                if ( thread == 0 )
-                        printf("STAGE2 BLOCK DATA UPDATED - DEVICE\n");
+                // if ( thread == 0 )
+                //         printf("STAGE2 BLOCK DATA UPDATED - DEVICE\n");
 
                     // Update the KEY DATA
                     // NOTE: key_data is actually used straight from the input buffer, no need to do anything here.
