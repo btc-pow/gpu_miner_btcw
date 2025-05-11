@@ -138,6 +138,47 @@ int main( int argc, char* argv[] ) {
     printf("Max grid size in Y: %d\n", deviceProps.maxGridSize[1]); // y-dimension
     printf("Max grid size in Z: %d\n", deviceProps.maxGridSize[2]); // z-dimension
 
+
+
+
+
+    int deviceCount = 0;
+    cudaError_t err = cudaGetDeviceCount(&deviceCount);
+
+    if (err != cudaSuccess) {
+        std::cerr << "Error getting CUDA device count: " << cudaGetErrorString(err) << std::endl;
+        return 1;
+    }
+
+    if (deviceCount == 0) {
+        std::cout << "No CUDA-capable devices found." << std::endl;
+        return 0;
+    }
+
+    std::cout << "Found " << deviceCount << " CUDA-capable device(s):\n";
+    cudaDeviceProp prop;
+    for (int i = 0; i < deviceCount; ++i) {
+        //cudaDeviceProp prop;
+        cudaGetDeviceProperties(&prop, i);
+
+        std::cout << "Device " << i << ": " << prop.name << "\n"
+                  << "  Compute capability: " << prop.major << "." << prop.minor << "\n"
+                  << "  Total global memory: " << prop.totalGlobalMem / (1024 * 1024) << " MB\n"
+                  << "  Multiprocessors: " << prop.multiProcessorCount << "\n"
+                  << "  Clock rate: " << prop.clockRate / 1000 << " MHz\n"
+                  << "  Memory Clock Rate (KHz): " << prop.memoryClockRate << "\n"
+                  << "  Memory Bus Width (bits): " << prop.memoryBusWidth << "\n"
+                  << "  Max threads per block: " << prop.maxThreadsPerBlock << "\n"
+                  << "  Max grid size: [" << prop.maxGridSize[0] << ", "
+                                         << prop.maxGridSize[1] << ", "
+                                         << prop.maxGridSize[2] << "]\n"
+                  << "  Max threads dim: [" << prop.maxThreadsDim[0] << ", "
+                                          << prop.maxThreadsDim[1] << ", "
+                                          << prop.maxThreadsDim[2] << "]\n\n";
+    }
+
+
+
     // Allocate memory on the device
     cudaMalloc(&d_gpu_num, 1);
 
@@ -351,14 +392,33 @@ int main( int argc, char* argv[] ) {
 
             if ( hash_no_sig == 0 )
             {
-                mvprintw(5, 0, "NOT CONNECTED TO BTCW NODE WALLET!!!   - Must send   generate   command in QT console to start mining server.\n");
-                mvprintw(7, 0, "Close and restart this GPU MINER now.\n");
+                
+                mvprintw(6, 0, "!!! NOT CONNECTED TO BTCW NODE WALLET !!!  ---> Must send   generate   command in QT console to start the mining server.\n");
+                mvprintw(7, 0, "!!! NOT CONNECTED TO BTCW NODE WALLET !!!  ---> Must send   generate   command in QT console to start the mining server.\n");
+                mvprintw(8, 0, "!!! NOT CONNECTED TO BTCW NODE WALLET !!!  ---> Must send   generate   command in QT console to start the mining server.\n");
+
+                // Try to open shared memory again
+                shm_fd = shm_open(SHM_NAME, O_RDWR, 0666);
+                if (shm_fd == -1) {
+                    //std::cerr << "Error opening shared memory" << std::endl;
+                }
+                else
+                {
+                    // Map shared memory into the process's address space
+                    shared_data = (SharedData*) mmap(NULL, sizeof(SharedData), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+                    if (shared_data == MAP_FAILED) {
+                        //std::cerr << "Error mapping shared memory" << std::endl;
+                    }
+                }
+                usleep(1000000);
+                                
             }
             else
             {
                 // remove warning
-                mvprintw(5, 0, "\n");
+                mvprintw(6, 0, "\n");
                 mvprintw(7, 0, "\n");
+                mvprintw(8, 0, "\n");
             }
 
 
@@ -385,7 +445,9 @@ int main( int argc, char* argv[] ) {
         }        
 
         // Always show status at the bottom
-        mvprintw(curr_y - 3, 0, "=======================================================\n");
+        mvprintw(curr_y - 5, 0, "=======================================================\n");
+        mvprintw(curr_y - 4, 0, "Device: %s\n", prop.name);
+        mvprintw(curr_y - 3, 0, "-------------------------------------------------------\n");
         mvprintw(curr_y - 2, 0, "Hashrate: %lf H/s\n", rate);
         mvprintw(curr_y - 1, 0, "=======================================================\n");
         refresh();
