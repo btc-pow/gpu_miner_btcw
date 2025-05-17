@@ -294,7 +294,7 @@ int main( int argc, char* argv[] ) {
     int prev_y, prev_x;
     int curr_y, curr_x;
     getmaxyx(stdscr, prev_y, prev_x);  // Initial size
-    mvprintw(0, 0, "Bitcoin-PoW GPU Miner\n");
+    mvprintw(0, 0, "Bitcoin-PoW GPU Miner v26.5.4\n");
 
     volatile uint64_t nonce_prev = 1234;
     nonce4hashrate_prev = 12345;
@@ -393,9 +393,9 @@ int main( int argc, char* argv[] ) {
             if ( hash_no_sig == 0 )
             {
                 
-                mvprintw(6, 0, "!!! NOT CONNECTED TO BTCW NODE WALLET !!!  ---> Must send   generate   command in QT console to start the mining server.\n");
-                mvprintw(7, 0, "!!! NOT CONNECTED TO BTCW NODE WALLET !!!  ---> Must send   generate   command in QT console to start the mining server.\n");
-                mvprintw(8, 0, "!!! NOT CONNECTED TO BTCW NODE WALLET !!!  ---> Must send   generate   command in QT console to start the mining server.\n");
+                mvprintw(6, 0, "!!! NOT CONNECTED TO BTCW NODE WALLET !!!  ---> Make sure your wallet has at least 1 utxo.\n");
+                mvprintw(7, 0, "!!! NOT CONNECTED TO BTCW NODE WALLET !!!  ---> Make sure your wallet has at least 1 utxo.\n");
+                mvprintw(8, 0, "!!! NOT CONNECTED TO BTCW NODE WALLET !!!  ---> Make sure your wallet has at least 1 utxo.\n");
 
                 // Try to open shared memory again
                 shm_fd = shm_open(SHM_NAME, O_RDWR, 0666);
