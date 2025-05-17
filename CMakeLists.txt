@@ -41,9 +41,16 @@ set(SRC_FILES
 )
 
 
+find_package(Curses REQUIRED)
+include_directories(${CURSES_INCLUDE_DIR})
+
+
+
+
+
 add_executable(gpu_miner ${SRC_FILES})
 
 # Optional: Add any additional compile options
 target_compile_options(gpu_miner PRIVATE -Wall -O3)
+target_link_libraries(gpu_miner cuda ${CURSES_LIBRARIES})
 
-target_link_libraries(gpu_miner PRIVATE cuda)
